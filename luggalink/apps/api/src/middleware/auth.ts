@@ -28,6 +28,22 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
   }
 }
 
+export function softAuth(req: Request, _res: Response, next: NextFunction): void {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) {
+    next();
+    return;
+  }
+
+  try {
+    const payload = verifyAccessToken(header.slice("Bearer ".length));
+    req.user = { id: payload.sub, role: payload.role };
+  } catch {
+    // Ignore invalid tokens here; requireAuth on the route will reject them.
+  }
+  next();
+}
+
 export function requireRole(...roles: string[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {

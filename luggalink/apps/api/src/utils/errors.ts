@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { logError } from "./logger";
 
 export class AppError extends Error {
   public readonly statusCode: number;
@@ -58,7 +59,7 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return;
   }
 
-  console.error(err);
+  logError("Unhandled error", err);
   res.status(500).json({
     error: { code: "INTERNAL_SERVER_ERROR", message: "Something went wrong" },
   });

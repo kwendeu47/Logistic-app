@@ -3,7 +3,7 @@ import { Router } from "express";
 import { prisma } from "../config/prisma";
 import { emitToBooking } from "../config/socket";
 import { requireAuth } from "../middleware/auth";
-import { uploadSingleImage } from "../middleware/upload";
+import { uploadSingleImage, verifyUploadedFiles } from "../middleware/upload";
 import { validate } from "../middleware/validate";
 import * as bookingService from "../services/booking.service";
 import * as customsService from "../services/customs.service";
@@ -175,6 +175,7 @@ documentsRouter.post(
   "/:id/boarding-pass",
   requireAuth,
   uploadSingleImage.single("boardingPass"),
+  verifyUploadedFiles(),
   async (req, res) => {
     const bookingId = String(req.params.id);
     const booking = await getBookingForDocuments(bookingId);

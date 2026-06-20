@@ -2,6 +2,7 @@ import { ItemCategory, type Prisma, type Trip, type User } from "@prisma/client"
 import { z } from "zod";
 import { prisma } from "../config/prisma";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../utils/errors";
+import * as fraudService from "./fraud.service";
 
 export const createTripSchema = z.object({
   originCity: z.string().min(1),
@@ -115,7 +116,11 @@ export async function publishTrip(tripId: string, userId: string): Promise<Trip>
     );
   }
 
-  return prisma.trip.update({ where: { id: tripId }, data: { status: "ACTIVE" } });
+  const updated = await prisma.trip.update({ where: { id: tripId }, data: { status: "ACTIVE" } });
+
+  await fraudService.checkTravelerDestinationSpray({ travelerId: userId });
+
+  return updated;
 }
 
 function buildSearchWhere(query: SearchTripsQuery): Prisma.TripWhereInput {

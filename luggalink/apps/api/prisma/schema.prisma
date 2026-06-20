@@ -162,6 +162,7 @@ model User {
   notifications      Notification[]  @relation("UserNotifications")
   devices            UserDevice[]    @relation("UserDevices")
   adminAuditLogs     AdminAuditLog[] @relation("AdminAuditLogAdmin")
+  fraudAlerts        FraudAlert[]    @relation("FraudAlertUser")
 
   @@index([role])
   @@map("users")
@@ -296,6 +297,7 @@ model Booking {
   messages    Message[]
   reviews     Review[]
   disputes    Dispute[]
+  fraudAlerts FraudAlert[]
 
   @@index([tripId])
   @@index([senderId])
@@ -420,6 +422,36 @@ model Notification {
   @@index([userId])
   @@index([type])
   @@map("notifications")
+}
+
+enum FraudAlertReason {
+  NEW_ACCOUNT_HIGH_VALUE
+  BOOKING_VELOCITY
+  TRAVELER_DESTINATION_SPRAY
+  GPS_AIRPORT_MISMATCH
+}
+
+model FraudAlert {
+  id String @id @default(uuid())
+
+  reason FraudAlertReason
+
+  userId String?
+  user   User?   @relation("FraudAlertUser", fields: [userId], references: [id])
+
+  bookingId String?
+  booking   Booking? @relation(fields: [bookingId], references: [id])
+
+  details Json?
+
+  resolved Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([bookingId])
+  @@index([reason])
+  @@map("fraud_alerts")
 }
 
 model AuditLog {

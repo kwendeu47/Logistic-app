@@ -7,6 +7,7 @@ import { uploadToS3 } from "../utils/s3";
 import { logAuditEvent } from "../utils/audit";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../utils/errors";
 import * as customsService from "./customs.service";
+import * as fraudService from "./fraud.service";
 import * as notificationService from "./notification.service";
 import * as qrService from "./qr.service";
 import * as stripeService from "./stripe.service";
@@ -171,6 +172,16 @@ export async function createBooking(senderId: string, input: CreateBookingInput)
     });
 
     await notificationService.sendBookingRequest(trip.travelerId, updatedBooking);
+
+    await Promise.all([
+      fraudService.checkNewAccountHighValue({
+        bookingId: updatedBooking.id,
+        senderId,
+        senderCreatedAt: sender.createdAt,
+        declaredValueUsd: itemRequest.declaredValueUsd,
+      }),
+      fraudService.checkBookingVelocity({ senderId, bookingId: updatedBooking.id }),
+    ]);
 
     return { booking: updatedBooking, stripeClientSecret: paymentIntent.client_secret };
   } catch (error) {
@@ -396,6 +407,14 @@ export async function confirmPickup(
     performedByUserId: travelerId,
   });
 
+  await fraudService.checkGpsAirportMismatch({
+    bookingId: booking.id,
+    performedByUserId: travelerId,
+    expectedIataCode: booking.trip.originIataCode,
+    latitude: input.latitude,
+    longitude: input.longitude,
+  });
+
   emitToBooking(booking.id, "qr_scanned", {
     bookingId: booking.id,
     stage: "TRAVELER_PICKUP",
@@ -516,6 +535,14 @@ export async function confirmDelivery(
     },
   });
 
+  await fraudService.checkGpsAirportMismatch({
+    bookingId: booking.id,
+    performedByUserId,
+    expectedIataCode: booking.trip.destinationIataCode,
+    latitude: input.latitude,
+    longitude: input.longitude,
+  });
+
   const updated = await releaseEscrowAndComplete(booking, performedByUserId);
 
   emitToBooking(booking.id, "qr_scanned", {
@@ -560,6 +587,15 @@ export async function scanQrCheckpoint(
       latitude: input.latitude,
       longitude: input.longitude,
     },
+  });
+
+  await fraudService.checkGpsAirportMismatch({
+    bookingId: booking.id,
+    performedByUserId,
+    expectedIataCode:
+      input.stage === "QR_SCAN_DEPARTURE" ? booking.trip.originIataCode : booking.trip.destinationIataCode,
+    latitude: input.latitude,
+    longitude: input.longitude,
   });
 
   let updated: Booking = booking;

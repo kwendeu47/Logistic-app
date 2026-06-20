@@ -80,7 +80,7 @@ bookingRouter.get("/:id", requireAuth, async (req, res) => {
 
 export const stripePaymentWebhookRouter = Router();
 
-stripePaymentWebhookRouter.post("/", async (req, res) => {
+stripePaymentWebhookRouter.post("/", (req, res) => {
   const signature = req.headers["stripe-signature"];
   if (typeof signature !== "string") {
     throw new BadRequestError("Missing Stripe signature header");
@@ -89,15 +89,23 @@ stripePaymentWebhookRouter.post("/", async (req, res) => {
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET ?? "";
   const event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
 
-  if (event.type === "payment_intent.payment_failed") {
-    const paymentIntent = event.data.object as Stripe.PaymentIntent;
-    await bookingService.handlePaymentFailed(paymentIntent.id);
-  }
-
-  if ((event.type as string) === "transfer.failed") {
-    const transfer = event.data.object as unknown as Stripe.Transfer;
-    await bookingService.handleTransferFailed(transfer.id);
-  }
-
   res.json({ received: true });
+
+  void processPaymentWebhookEvent(event);
 });
+
+async function processPaymentWebhookEvent(event: Stripe.Event): Promise<void> {
+  try {
+    if (event.type === "payment_intent.payment_failed") {
+      const paymentIntent = event.data.object as Stripe.PaymentIntent;
+      await bookingService.handlePaymentFailed(paymentIntent.id);
+    }
+
+    if ((event.type as string) === "transfer.failed") {
+      const transfer = event.data.object as unknown as Stripe.Transfer;
+      await bookingService.handleTransferFailed(transfer.id);
+    }
+  } catch (error) {
+    console.error(`Failed to process Stripe webhook event ${event.id}`, error);
+  }
+}
