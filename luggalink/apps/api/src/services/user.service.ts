@@ -32,6 +32,7 @@ export async function updateProfile(id: string, data: UpdateProfileInput): Promi
 
 export interface KycSession {
   clientSecret: string | null;
+  url: string | null;
 }
 
 export async function createKycSession(userId: string): Promise<KycSession> {
@@ -43,9 +44,10 @@ export async function createKycSession(userId: string): Promise<KycSession> {
   const session = await stripe.identity.verificationSessions.create({
     type: "document",
     metadata: { userId },
+    options: { document: { require_matching_selfie: true } },
   });
 
-  return { clientSecret: session.client_secret };
+  return { clientSecret: session.client_secret, url: session.url ?? null };
 }
 
 export interface RegisterDeviceTokenInput {
