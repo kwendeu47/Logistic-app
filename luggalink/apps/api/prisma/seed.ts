@@ -29,6 +29,7 @@ async function main() {
       firstName: "Amara",
       lastName: "Okafor",
       role: "SENDER",
+      country: "Kenya",
       isPhoneVerified: true,
     },
   });
@@ -101,6 +102,7 @@ async function main() {
       recipientName: "John Doe",
       recipientPhone: "+44200000000",
       recipientAddress: "10 Downing Street, London, UK",
+      recipientCountry: "United Kingdom",
     },
   });
 

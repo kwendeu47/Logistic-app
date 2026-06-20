@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { UnauthorizedError } from "../utils/errors";
+import { ForbiddenError, UnauthorizedError } from "../utils/errors";
 import { verifyAccessToken } from "../utils/jwt";
 
 declare global {
@@ -26,4 +26,13 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
   } catch {
     throw new UnauthorizedError("Invalid or expired access token");
   }
+}
+
+export function requireRole(...roles: string[]) {
+  return (req: Request, _res: Response, next: NextFunction): void => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      throw new ForbiddenError("You do not have permission to perform this action");
+    }
+    next();
+  };
 }

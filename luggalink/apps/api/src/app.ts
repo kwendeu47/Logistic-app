@@ -3,6 +3,7 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import authRouter from "./routes/auth.routes";
+import { tripRouter } from "./routes/trip.routes";
 import { stripeIdentityWebhookRouter, userRouter } from "./routes/user.routes";
 import { errorHandler } from "./utils/errors";
 
@@ -27,6 +28,7 @@ export function createApp() {
 
   app.use("/auth", authRouter);
   app.use("/users", userRouter);
+  app.use("/trips", tripRouter);
 
   app.use(errorHandler);
 

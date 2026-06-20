@@ -111,6 +111,7 @@ model User {
   firstName String
   lastName  String
   avatarUrl String?
+  country   String?
 
   role UserRole @default(SENDER)
 
@@ -124,6 +125,8 @@ model User {
 
   stripeCustomerId String?
   stripeAccountId  String?
+
+  expoPushToken String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -208,6 +211,7 @@ model ItemRequest {
   recipientName    String
   recipientPhone   String
   recipientAddress String
+  recipientCountry String
 
   trackingNumber String?
 
