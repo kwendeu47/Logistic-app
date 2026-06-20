@@ -47,6 +47,15 @@ export async function createKycSession(userId: string): Promise<KycSession> {
     options: { document: { require_matching_selfie: true } },
   });
 
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      stripeIdentitySessionId: session.id,
+      kycStatus: "PENDING",
+      kycSubmittedAt: new Date(),
+    },
+  });
+
   return { clientSecret: session.client_secret, url: session.url ?? null };
 }
 
@@ -76,6 +85,20 @@ export async function handleIdentityVerified(
 
   await prisma.user.update({
     where: { id: userId },
-    data: { isIdVerified: true, isFaceVerified: true },
+    data: { isIdVerified: true, isFaceVerified: true, kycStatus: "VERIFIED" },
+  });
+}
+
+export async function handleIdentityRequiresInput(
+  session: Stripe.Identity.VerificationSession,
+): Promise<void> {
+  const userId = session.metadata?.userId;
+  if (!userId) {
+    return;
+  }
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { kycStatus: "REQUIRES_INPUT" },
   });
 }

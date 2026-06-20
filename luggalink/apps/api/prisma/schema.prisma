@@ -89,6 +89,14 @@ enum DisputeStatus {
   RESOLVED_SPLIT
 }
 
+enum KycStatus {
+  NOT_SUBMITTED
+  PENDING
+  VERIFIED
+  REQUIRES_INPUT
+  REJECTED
+}
+
 enum NotificationType {
   BOOKING_REQUEST
   BOOKING_ACCEPTED
@@ -108,26 +116,31 @@ enum NotificationType {
 // ─────────────────────────────────────────────────────────────────────────
 
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  phone        String?  @unique
+  id           String  @id @default(uuid())
+  email        String  @unique
+  phone        String? @unique
   passwordHash String
 
-  firstName String
-  lastName  String
-  avatarUrl String?
-  country   String?
+  firstName     String
+  lastName      String
+  avatarUrl     String?
+  country       String?
   postalAddress String?
 
   role UserRole @default(SENDER)
 
-  trustScore       Float @default(5.0)
-  totalTrips       Int   @default(0)
-  totalDeliveries  Int   @default(0)
+  trustScore      Float @default(5.0)
+  totalTrips      Int   @default(0)
+  totalDeliveries Int   @default(0)
 
   isPhoneVerified Boolean @default(false)
   isIdVerified    Boolean @default(false)
   isFaceVerified  Boolean @default(false)
+  isSuspended     Boolean @default(false)
+
+  kycStatus               KycStatus @default(NOT_SUBMITTED)
+  stripeIdentitySessionId String?
+  kycSubmittedAt          DateTime?
 
   stripeCustomerId String?
   stripeAccountId  String?
@@ -137,17 +150,18 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  trips               Trip[]             @relation("TravelerTrips")
-  itemRequests        ItemRequest[]      @relation("SenderItemRequests")
-  bookingsAsSender    Booking[]          @relation("SenderBookings")
-  bookingsAsTraveler  Booking[]          @relation("TravelerBookings")
-  handoffLogs         HandoffLog[]       @relation("HandoffPerformedBy")
-  messages            Message[]          @relation("MessageSender")
-  reviewsWritten      Review[]           @relation("ReviewerReviews")
-  reviewsReceived     Review[]           @relation("RevieweeReviews")
-  disputesOpened      Dispute[]          @relation("DisputeOpenedBy")
-  notifications       Notification[]     @relation("UserNotifications")
-  devices             UserDevice[]       @relation("UserDevices")
+  trips              Trip[]          @relation("TravelerTrips")
+  itemRequests       ItemRequest[]   @relation("SenderItemRequests")
+  bookingsAsSender   Booking[]       @relation("SenderBookings")
+  bookingsAsTraveler Booking[]       @relation("TravelerBookings")
+  handoffLogs        HandoffLog[]    @relation("HandoffPerformedBy")
+  messages           Message[]       @relation("MessageSender")
+  reviewsWritten     Review[]        @relation("ReviewerReviews")
+  reviewsReceived    Review[]        @relation("RevieweeReviews")
+  disputesOpened     Dispute[]       @relation("DisputeOpenedBy")
+  notifications      Notification[]  @relation("UserNotifications")
+  devices            UserDevice[]    @relation("UserDevices")
+  adminAuditLogs     AdminAuditLog[] @relation("AdminAuditLogAdmin")
 
   @@index([role])
   @@map("users")
@@ -159,9 +173,9 @@ model Trip {
   travelerId String
   traveler   User   @relation("TravelerTrips", fields: [travelerId], references: [id])
 
-  originCity      String
-  originCountry   String
-  originIataCode  String
+  originCity     String
+  originCountry  String
+  originIataCode String
 
   destinationCity     String
   destinationCountry  String
@@ -180,6 +194,9 @@ model Trip {
   allowedCategories String[]
 
   boardingPassUrl String?
+
+  isFlagged  Boolean @default(false)
+  flagReason String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -253,8 +270,8 @@ model Booking {
   platformFeeUsd    Float
   travelerPayoutUsd Float
 
-  hasInsurance     Boolean @default(false)
-  insuranceFeeUsd  Float   @default(0)
+  hasInsurance    Boolean @default(false)
+  insuranceFeeUsd Float   @default(0)
 
   stripePaymentIntentId String?
   stripeTransferId      String?
@@ -431,11 +448,30 @@ model UserDevice {
   userId String
   user   User   @relation("UserDevices", fields: [userId], references: [id])
 
-  expoPushToken String   @unique
+  expoPushToken String @unique
   platform      String
 
   createdAt DateTime @default(now())
 
   @@index([userId])
   @@map("user_devices")
+}
+
+model AdminAuditLog {
+  id String @id @default(uuid())
+
+  adminId String
+  admin   User   @relation("AdminAuditLogAdmin", fields: [adminId], references: [id])
+
+  action   String
+  targetId String
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([adminId])
+  @@index([targetId])
+  @@index([action])
+  @@map("admin_audit_logs")
 }

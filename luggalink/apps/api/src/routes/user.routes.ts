@@ -69,5 +69,10 @@ stripeIdentityWebhookRouter.post("/", async (req, res) => {
     await userService.handleIdentityVerified(session);
   }
 
+  if (event.type === "identity.verification_session.requires_input") {
+    const session = event.data.object as Stripe.Identity.VerificationSession;
+    await userService.handleIdentityRequiresInput(session);
+  }
+
   res.json({ received: true });
 });
