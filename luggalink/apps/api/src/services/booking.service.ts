@@ -1,13 +1,14 @@
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Booking } from "@prisma/client";
-import PDFDocument from "pdfkit";
 import { z } from "zod";
 import { prisma } from "../config/prisma";
 import { emitToBooking } from "../config/socket";
 import { uploadToS3 } from "../utils/s3";
 import { logAuditEvent } from "../utils/audit";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../utils/errors";
+import * as customsService from "./customs.service";
 import * as notificationService from "./notification.service";
+import * as qrService from "./qr.service";
 import * as stripeService from "./stripe.service";
 
 const PLATFORM_FEE_RATE = 0.1;
@@ -48,17 +49,20 @@ export const disputeSchema = z.object({
   evidenceUrls: z.array(z.string().url()).default([]),
 });
 
+export const scanQrSchema = z.object({
+  scannedCode: z.string().min(1),
+  stage: z.enum(["QR_SCAN_DEPARTURE", "QR_SCAN_ARRIVAL"]),
+  photoUrls: z.array(z.string().url()).min(1),
+  latitude: z.number().optional(),
+  longitude: z.number().optional(),
+});
+
 export type CreateBookingInput = z.infer<typeof createBookingSchema>;
 export type ItemPostedInput = z.infer<typeof itemPostedSchema>;
 export type PickupConfirmedInput = z.infer<typeof pickupConfirmedSchema>;
 export type DeliveryConfirmedInput = z.infer<typeof deliveryConfirmedSchema>;
 export type DisputeInput = z.infer<typeof disputeSchema>;
-
-function generateQrSealCode(): string {
-  const uuid = randomUUID();
-  const hash = createHash("sha256").update(uuid).digest("hex").slice(0, 8);
-  return `${uuid}-${hash}`;
-}
+export type ScanQrInput = z.infer<typeof scanQrSchema>;
 
 const BOOKING_DETAIL_INCLUDE = {
   trip: true,
@@ -81,45 +85,6 @@ async function getBookingOrThrow(bookingId: string) {
   }
 
   return booking;
-}
-
-async function generateCustomsFormPdf(booking: {
-  id: string;
-  totalPriceUsd: number;
-  itemRequest: { name: string; description: string; declaredValueUsd: number; recipientName: string; recipientAddress: string; recipientCountry: string };
-  sender: { firstName: string; lastName: string };
-  traveler: { firstName: string; lastName: string };
-}): Promise<string> {
-  const doc = new PDFDocument();
-  const chunks: Buffer[] = [];
-
-  doc.on("data", (chunk: Buffer) => chunks.push(chunk));
-
-  doc.fontSize(18).text("Customs Declaration Form", { align: "center" });
-  doc.moveDown();
-  doc.fontSize(12).text(`Booking ID: ${booking.id}`);
-  doc.text(`Sender: ${booking.sender.firstName} ${booking.sender.lastName}`);
-  doc.text(`Traveler: ${booking.traveler.firstName} ${booking.traveler.lastName}`);
-  doc.moveDown();
-  doc.text(`Item: ${booking.itemRequest.name}`);
-  doc.text(`Description: ${booking.itemRequest.description}`);
-  doc.text(`Declared value: $${booking.itemRequest.declaredValueUsd.toFixed(2)}`);
-  doc.moveDown();
-  doc.text(`Recipient: ${booking.itemRequest.recipientName}`);
-  doc.text(`Recipient address: ${booking.itemRequest.recipientAddress}`);
-  doc.text(`Recipient country: ${booking.itemRequest.recipientCountry}`);
-
-  doc.end();
-
-  const buffer = await new Promise<Buffer>((resolve) => {
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-  });
-
-  return uploadToS3({
-    key: `customs-forms/${booking.id}.pdf`,
-    body: buffer,
-    contentType: "application/pdf",
-  });
 }
 
 export interface CreateBookingResult {
@@ -160,10 +125,12 @@ export async function createBooking(senderId: string, input: CreateBookingInput)
   const platformFeeUsd = totalPriceUsd * PLATFORM_FEE_RATE;
   const travelerPayoutUsd = totalPriceUsd * TRAVELER_PAYOUT_RATE;
   const insuranceFeeUsd = input.hasInsurance ? INSURANCE_FEE_USD : 0;
-  const qrSealCode = generateQrSealCode();
+  const bookingId = randomUUID();
+  const qrSealCode = qrService.generateSealCode(bookingId);
 
   const booking = await prisma.booking.create({
     data: {
+      id: bookingId,
       tripId: trip.id,
       itemRequestId: itemRequest.id,
       senderId,
@@ -228,7 +195,21 @@ export async function acceptBooking(bookingId: string, travelerId: string): Prom
 
   await stripeService.captureEscrowPaymentIntent(booking.stripePaymentIntentId, booking.id);
 
-  const customsFormUrl = await generateCustomsFormPdf(booking);
+  const customsFormUrl = await customsService.generateAndUploadCustomsForm(
+    { id: booking.id },
+    {
+      name: booking.itemRequest.name,
+      description: booking.itemRequest.description,
+      weightLbs: booking.itemRequest.weightLbs,
+      declaredValueUsd: booking.itemRequest.declaredValueUsd,
+      category: booking.itemRequest.category,
+      recipientName: booking.itemRequest.recipientName,
+      recipientAddress: booking.itemRequest.recipientAddress,
+      recipientCountry: booking.itemRequest.recipientCountry,
+    },
+    booking.sender,
+    booking.traveler,
+  );
 
   const updated = await prisma.$transaction(async (tx) => {
     await tx.trip.update({
@@ -426,6 +407,61 @@ export async function confirmPickup(
   return updated;
 }
 
+async function releaseEscrowAndComplete(
+  booking: Awaited<ReturnType<typeof getBookingOrThrow>>,
+  performedByUserId: string,
+): Promise<Booking> {
+  if (!booking.traveler.stripeAccountId) {
+    throw new BadRequestError("Traveler has no connected Stripe account for payout");
+  }
+
+  const transfer = await stripeService.releaseEscrowToTraveler({
+    bookingId: booking.id,
+    travelerStripeAccountId: booking.traveler.stripeAccountId,
+    amountUsd: booking.travelerPayoutUsd,
+  });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.itemRequest.update({ where: { id: booking.itemRequestId }, data: { status: "DELIVERED" } });
+
+    await tx.user.update({ where: { id: booking.travelerId }, data: { totalTrips: { increment: 1 } } });
+    await tx.user.update({ where: { id: booking.senderId }, data: { totalDeliveries: { increment: 1 } } });
+
+    return tx.booking.update({
+      where: { id: booking.id },
+      data: {
+        status: "COMPLETED",
+        escrowStatus: "RELEASED",
+        deliveredAt: new Date(),
+        stripeTransferId: transfer.id,
+      },
+    });
+  });
+
+  await logAuditEvent({
+    entity: ACTIVE_BOOKING_ENTITY,
+    entityId: booking.id,
+    action: "DELIVERY_CONFIRMED",
+    fromStatus: booking.status,
+    toStatus: "COMPLETED",
+    performedByUserId,
+  });
+
+  emitToBooking(booking.id, "booking_status_changed", { bookingId: booking.id, newStatus: "COMPLETED" });
+
+  await Promise.all([
+    notificationService.sendToUser(booking.senderId, {
+      title: "Delivery confirmed",
+      body: "Your item has been delivered. Please leave a review for your traveler.",
+      data: { bookingId: booking.id },
+    }),
+    notificationService.sendDeliveryConfirmed(booking.travelerId, booking.travelerPayoutUsd),
+    notificationService.sendPayoutSent(booking.travelerId, booking.travelerPayoutUsd),
+  ]);
+
+  return updated;
+}
+
 export async function confirmDelivery(
   bookingId: string,
   performedByUserId: string,
@@ -480,58 +516,82 @@ export async function confirmDelivery(
     },
   });
 
-  if (!booking.traveler.stripeAccountId) {
-    throw new BadRequestError("Traveler has no connected Stripe account for payout");
-  }
-
-  const transfer = await stripeService.releaseEscrowToTraveler({
-    bookingId: booking.id,
-    travelerStripeAccountId: booking.traveler.stripeAccountId,
-    amountUsd: booking.travelerPayoutUsd,
-  });
-
-  const updated = await prisma.$transaction(async (tx) => {
-    await tx.itemRequest.update({ where: { id: booking.itemRequestId }, data: { status: "DELIVERED" } });
-
-    await tx.user.update({ where: { id: booking.travelerId }, data: { totalTrips: { increment: 1 } } });
-    await tx.user.update({ where: { id: booking.senderId }, data: { totalDeliveries: { increment: 1 } } });
-
-    return tx.booking.update({
-      where: { id: booking.id },
-      data: {
-        status: "COMPLETED",
-        escrowStatus: "RELEASED",
-        deliveredAt: new Date(),
-        stripeTransferId: transfer.id,
-      },
-    });
-  });
-
-  await logAuditEvent({
-    entity: ACTIVE_BOOKING_ENTITY,
-    entityId: booking.id,
-    action: "DELIVERY_CONFIRMED",
-    fromStatus: booking.status,
-    toStatus: "COMPLETED",
-    performedByUserId,
-  });
+  const updated = await releaseEscrowAndComplete(booking, performedByUserId);
 
   emitToBooking(booking.id, "qr_scanned", {
     bookingId: booking.id,
     stage: "RECIPIENT_CONFIRMED",
     timestamp: new Date(),
   });
-  emitToBooking(booking.id, "booking_status_changed", { bookingId: booking.id, newStatus: "COMPLETED" });
 
-  await Promise.all([
-    notificationService.sendToUser(booking.senderId, {
-      title: "Delivery confirmed",
-      body: "Your item has been delivered. Please leave a review for your traveler.",
-      data: { bookingId: booking.id },
-    }),
-    notificationService.sendDeliveryConfirmed(booking.travelerId, booking.travelerPayoutUsd),
-    notificationService.sendPayoutSent(booking.travelerId, booking.travelerPayoutUsd),
-  ]);
+  return updated;
+}
+
+export async function scanQrCheckpoint(
+  bookingId: string,
+  performedByUserId: string,
+  input: ScanQrInput,
+): Promise<Booking> {
+  const booking = await getBookingOrThrow(bookingId);
+
+  if (booking.senderId !== performedByUserId && booking.travelerId !== performedByUserId) {
+    throw new ForbiddenError("You are not a party to this booking");
+  }
+
+  if (!qrService.validateSealScan(input.scannedCode, booking.qrSealCode)) {
+    await logAuditEvent({
+      entity: ACTIVE_BOOKING_ENTITY,
+      entityId: booking.id,
+      action: "QR_MISMATCH_SCAN",
+      performedByUserId,
+      metadata: { stage: input.stage },
+    });
+
+    throw new BadRequestError("Scanned QR code is invalid or does not match the booking seal code");
+  }
+
+  await prisma.handoffLog.create({
+    data: {
+      bookingId: booking.id,
+      stage: input.stage,
+      photoUrls: input.photoUrls,
+      scannedQrCode: input.scannedCode,
+      performedByUserId,
+      latitude: input.latitude,
+      longitude: input.longitude,
+    },
+  });
+
+  let updated: Booking = booking;
+
+  if (input.stage === "QR_SCAN_DEPARTURE") {
+    updated = await prisma.booking.update({
+      where: { id: booking.id },
+      data: { status: "ACTIVE" },
+    });
+
+    await logAuditEvent({
+      entity: ACTIVE_BOOKING_ENTITY,
+      entityId: booking.id,
+      action: "QR_SCAN_DEPARTURE",
+      fromStatus: booking.status,
+      toStatus: "ACTIVE",
+      performedByUserId,
+    });
+  } else {
+    updated = await releaseEscrowAndComplete(booking, performedByUserId);
+  }
+
+  emitToBooking(booking.id, "qr_scanned", {
+    bookingId: booking.id,
+    stage: input.stage,
+    timestamp: new Date(),
+  });
+
+  await notificationService.sendQrScanned(
+    performedByUserId === booking.senderId ? booking.travelerId : booking.senderId,
+    input.stage,
+  );
 
   return updated;
 }

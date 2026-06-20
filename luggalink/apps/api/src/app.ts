@@ -4,6 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import authRouter from "./routes/auth.routes";
 import { bookingRouter, stripePaymentWebhookRouter } from "./routes/booking.routes";
+import { documentsRouter } from "./routes/documents.routes";
 import { messageRouter } from "./routes/message.routes";
 import { tripRouter } from "./routes/trip.routes";
 import { stripeIdentityWebhookRouter, userRouter } from "./routes/user.routes";
@@ -39,6 +40,7 @@ export function createApp() {
   app.use("/trips", tripRouter);
   app.use("/bookings", bookingRouter);
   app.use("/bookings", messageRouter);
+  app.use("/bookings", documentsRouter);
 
   app.use(errorHandler);
 
