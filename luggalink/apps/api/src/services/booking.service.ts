@@ -3,10 +3,11 @@ import type { Booking } from "@prisma/client";
 import PDFDocument from "pdfkit";
 import { z } from "zod";
 import { prisma } from "../config/prisma";
+import { emitToBooking } from "../config/socket";
 import { uploadToS3 } from "../utils/s3";
 import { logAuditEvent } from "../utils/audit";
-import { notifyUser } from "../utils/notify";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../utils/errors";
+import * as notificationService from "./notification.service";
 import * as stripeService from "./stripe.service";
 
 const PLATFORM_FEE_RATE = 0.1;
@@ -202,16 +203,7 @@ export async function createBooking(senderId: string, input: CreateBookingInput)
       performedByUserId: senderId,
     });
 
-    const traveler = await prisma.user.findUnique({ where: { id: trip.travelerId } });
-    if (traveler) {
-      await notifyUser({
-        user: traveler,
-        type: "BOOKING_REQUEST",
-        title: "New booking request",
-        body: `You have a new booking request for ${itemRequest.weightLbs} lbs.`,
-        data: { bookingId: booking.id },
-      });
-    }
+    await notificationService.sendBookingRequest(trip.travelerId, updatedBooking);
 
     return { booking: updatedBooking, stripeClientSecret: paymentIntent.client_secret };
   } catch (error) {
@@ -264,17 +256,10 @@ export async function acceptBooking(bookingId: string, travelerId: string): Prom
     performedByUserId: travelerId,
   });
 
-  await notifyUser({
-    user: booking.sender,
-    type: "BOOKING_ACCEPTED",
-    title: "Booking accepted",
-    body: "Your traveler accepted the booking. Funds are now held in escrow.",
-    data: {
-      bookingId: booking.id,
-      travelerPostalAddress: booking.traveler.postalAddress,
-      customsFormUrl,
-    },
-  });
+  emitToBooking(booking.id, "booking_status_changed", { bookingId: booking.id, newStatus: "ACCEPTED" });
+
+  await notificationService.sendBookingAccepted(booking.senderId, updated);
+  await notificationService.sendPaymentHeld(booking.senderId, booking.totalPriceUsd + booking.insuranceFeeUsd);
 
   return updated;
 }
@@ -310,9 +295,9 @@ export async function rejectBooking(bookingId: string, travelerId: string): Prom
     performedByUserId: travelerId,
   });
 
-  await notifyUser({
-    user: booking.sender,
-    type: "BOOKING_REJECTED",
+  emitToBooking(booking.id, "booking_status_changed", { bookingId: booking.id, newStatus: "REJECTED" });
+
+  await notificationService.sendToUser(booking.senderId, {
     title: "Booking rejected",
     body: "Your traveler rejected the booking. You have been refunded.",
     data: { bookingId: booking.id },
@@ -361,13 +346,7 @@ export async function reportItemPosted(
     performedByUserId: senderId,
   });
 
-  await notifyUser({
-    user: booking.traveler,
-    type: "ITEM_POSTED",
-    title: "Item posted",
-    body: `The sender posted the item. Tracking number: ${input.trackingNumber}.`,
-    data: { bookingId: booking.id, trackingNumber: input.trackingNumber },
-  });
+  await notificationService.sendItemPosted(booking.travelerId, input.trackingNumber);
 
   return updated;
 }
@@ -395,16 +374,12 @@ export async function confirmPickup(
     });
 
     await Promise.all([
-      notifyUser({
-        user: booking.sender,
-        type: "QR_SCANNED",
+      notificationService.sendToUser(booking.senderId, {
         title: "QR code mismatch",
         body: "The QR code scanned at pickup did not match. This booking has been flagged for review.",
         data: { bookingId: booking.id },
       }),
-      notifyUser({
-        user: booking.traveler,
-        type: "QR_SCANNED",
+      notificationService.sendToUser(booking.travelerId, {
         title: "QR code mismatch",
         body: "The QR code you scanned did not match. This booking has been flagged for review.",
         data: { bookingId: booking.id },
@@ -440,6 +415,14 @@ export async function confirmPickup(
     performedByUserId: travelerId,
   });
 
+  emitToBooking(booking.id, "qr_scanned", {
+    bookingId: booking.id,
+    stage: "TRAVELER_PICKUP",
+    timestamp: new Date(),
+  });
+
+  await notificationService.sendQrScanned(booking.senderId, "TRAVELER_PICKUP");
+
   return updated;
 }
 
@@ -463,16 +446,12 @@ export async function confirmDelivery(
     });
 
     await Promise.all([
-      notifyUser({
-        user: booking.sender,
-        type: "QR_SCANNED",
+      notificationService.sendToUser(booking.senderId, {
         title: "QR code mismatch",
         body: "The QR code scanned at delivery did not match. This booking has been flagged for review.",
         data: { bookingId: booking.id },
       }),
-      notifyUser({
-        user: booking.traveler,
-        type: "QR_SCANNED",
+      notificationService.sendToUser(booking.travelerId, {
         title: "QR code mismatch",
         body: "The QR code scanned at delivery did not match. This booking has been flagged for review.",
         data: { bookingId: booking.id },
@@ -537,21 +516,21 @@ export async function confirmDelivery(
     performedByUserId,
   });
 
+  emitToBooking(booking.id, "qr_scanned", {
+    bookingId: booking.id,
+    stage: "RECIPIENT_CONFIRMED",
+    timestamp: new Date(),
+  });
+  emitToBooking(booking.id, "booking_status_changed", { bookingId: booking.id, newStatus: "COMPLETED" });
+
   await Promise.all([
-    notifyUser({
-      user: booking.sender,
-      type: "DELIVERED",
+    notificationService.sendToUser(booking.senderId, {
       title: "Delivery confirmed",
       body: "Your item has been delivered. Please leave a review for your traveler.",
       data: { bookingId: booking.id },
     }),
-    notifyUser({
-      user: booking.traveler,
-      type: "PAYOUT_SENT",
-      title: "Payout sent",
-      body: `Your payout of $${booking.travelerPayoutUsd.toFixed(2)} has been sent. Please leave a review for the sender.`,
-      data: { bookingId: booking.id },
-    }),
+    notificationService.sendDeliveryConfirmed(booking.travelerId, booking.travelerPayoutUsd),
+    notificationService.sendPayoutSent(booking.travelerId, booking.travelerPayoutUsd),
   ]);
 
   return updated;
@@ -593,21 +572,11 @@ export async function openDispute(bookingId: string, openedByUserId: string, inp
     metadata: { disputeId: dispute.id, reason: input.reason },
   });
 
+  emitToBooking(booking.id, "booking_status_changed", { bookingId: booking.id, newStatus: "DISPUTED" });
+
   await Promise.all([
-    notifyUser({
-      user: booking.sender,
-      type: "DISPUTE_OPENED",
-      title: "Dispute opened",
-      body: "A dispute has been opened on your booking. Escrow funds are frozen pending review.",
-      data: { bookingId: booking.id, disputeId: dispute.id },
-    }),
-    notifyUser({
-      user: booking.traveler,
-      type: "DISPUTE_OPENED",
-      title: "Dispute opened",
-      body: "A dispute has been opened on your booking. Escrow funds are frozen pending review.",
-      data: { bookingId: booking.id, disputeId: dispute.id },
-    }),
+    notificationService.sendDisputeOpened(booking.senderId, dispute.id),
+    notificationService.sendDisputeOpened(booking.travelerId, dispute.id),
   ]);
 
   return dispute;
@@ -648,9 +617,9 @@ export async function handlePaymentFailed(paymentIntentId: string): Promise<void
     toStatus: "CANCELLED",
   });
 
-  await notifyUser({
-    user: booking.sender,
-    type: "PAYMENT_FAILED",
+  emitToBooking(booking.id, "booking_status_changed", { bookingId: booking.id, newStatus: "CANCELLED" });
+
+  await notificationService.sendToUser(booking.senderId, {
     title: "Payment failed",
     body: "Your payment for this booking failed and the booking has been cancelled.",
     data: { bookingId: booking.id },
@@ -700,9 +669,7 @@ export async function handleTransferFailed(transferId: string): Promise<void> {
 
     const admin = await prisma.user.findFirst({ where: { role: "ADMIN" } });
     if (admin) {
-      await notifyUser({
-        user: admin,
-        type: "PAYOUT_SENT",
+      await notificationService.sendToUser(admin.id, {
         title: "Payout retry failed",
         body: `Payout retry failed for booking ${booking.id}. Manual intervention required.`,
         data: { bookingId: booking.id },

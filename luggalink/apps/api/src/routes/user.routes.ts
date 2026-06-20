@@ -38,6 +38,21 @@ userRouter.post("/me/kyc-session", requireAuth, async (req, res) => {
   res.json(session);
 });
 
+const deviceTokenSchema = z.object({
+  expoPushToken: z.string().min(1),
+  platform: z.enum(["ios", "android"]),
+});
+
+userRouter.post(
+  "/me/device-token",
+  requireAuth,
+  validate(deviceTokenSchema),
+  async (req, res) => {
+    const device = await userService.registerDeviceToken(req.user!.id, req.body);
+    res.json({ device });
+  },
+);
+
 export const stripeIdentityWebhookRouter = Router();
 
 stripeIdentityWebhookRouter.post("/", async (req, res) => {

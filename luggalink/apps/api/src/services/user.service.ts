@@ -1,4 +1,4 @@
-import type { User } from "@prisma/client";
+import type { User, UserDevice } from "@prisma/client";
 import type Stripe from "stripe";
 import { prisma } from "../config/prisma";
 import { stripe } from "../config/stripe";
@@ -46,6 +46,22 @@ export async function createKycSession(userId: string): Promise<KycSession> {
   });
 
   return { clientSecret: session.client_secret };
+}
+
+export interface RegisterDeviceTokenInput {
+  expoPushToken: string;
+  platform: "ios" | "android";
+}
+
+export async function registerDeviceToken(
+  userId: string,
+  input: RegisterDeviceTokenInput,
+): Promise<UserDevice> {
+  return prisma.userDevice.upsert({
+    where: { expoPushToken: input.expoPushToken },
+    create: { userId, expoPushToken: input.expoPushToken, platform: input.platform },
+    update: { userId, platform: input.platform },
+  });
 }
 
 export async function handleIdentityVerified(
