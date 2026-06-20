@@ -3,6 +3,7 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import authRouter from "./routes/auth.routes";
+import { bookingRouter, stripePaymentWebhookRouter } from "./routes/booking.routes";
 import { tripRouter } from "./routes/trip.routes";
 import { stripeIdentityWebhookRouter, userRouter } from "./routes/user.routes";
 import { errorHandler } from "./utils/errors";
@@ -20,6 +21,12 @@ export function createApp() {
     stripeIdentityWebhookRouter,
   );
 
+  app.use(
+    "/webhooks/stripe-payment",
+    express.raw({ type: "application/json" }),
+    stripePaymentWebhookRouter,
+  );
+
   app.use(express.json());
 
   app.get("/health", (_req, res) => {
@@ -29,6 +36,7 @@ export function createApp() {
   app.use("/auth", authRouter);
   app.use("/users", userRouter);
   app.use("/trips", tripRouter);
+  app.use("/bookings", bookingRouter);
 
   app.use(errorHandler);
 

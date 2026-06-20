@@ -52,6 +52,7 @@ enum EscrowStatus {
   HELD
   RELEASED
   REFUNDED
+  FROZEN
 }
 
 enum BookingStatus {
@@ -61,6 +62,7 @@ enum BookingStatus {
   ACTIVE
   COMPLETED
   DISPUTED
+  CANCELLED
 }
 
 enum HandoffStage {
@@ -96,6 +98,8 @@ enum NotificationType {
   DELIVERED
   DISPUTE_OPENED
   PAYOUT_SENT
+  BOOKING_REJECTED
+  PAYMENT_FAILED
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -112,6 +116,7 @@ model User {
   lastName  String
   avatarUrl String?
   country   String?
+  postalAddress String?
 
   role UserRole @default(SENDER)
 
@@ -246,7 +251,13 @@ model Booking {
   platformFeeUsd    Float
   travelerPayoutUsd Float
 
+  hasInsurance     Boolean @default(false)
+  insuranceFeeUsd  Float   @default(0)
+
   stripePaymentIntentId String?
+  stripeTransferId      String?
+
+  customsFormUrl String?
 
   escrowStatus EscrowStatus @default(PENDING)
 
@@ -286,6 +297,7 @@ model HandoffLog {
   photoUrls String[]
 
   scannedQrCode String?
+  signatureUrl  String?
 
   performedByUserId String
   performedBy       User   @relation("HandoffPerformedBy", fields: [performedByUserId], references: [id])
@@ -389,4 +401,24 @@ model Notification {
   @@index([userId])
   @@index([type])
   @@map("notifications")
+}
+
+model AuditLog {
+  id String @id @default(uuid())
+
+  entity     String
+  entityId   String
+  action     String
+  fromStatus String?
+  toStatus   String?
+
+  performedByUserId String?
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([performedByUserId])
+  @@map("audit_logs")
 }
